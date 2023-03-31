@@ -59,7 +59,7 @@ class TrainConfig:
     normalize_reward: bool = False  # Normalize reward
     # Wandb logging
     project: str = "my_CORL_CQL"
-    group: str = "CQL-" + env
+    group: str = "CQLBP-" + env
     name: str = str(seed)
 
     def __post_init__(self):
@@ -292,6 +292,80 @@ class ReparameterizedTanhGaussian(nn.Module):
 
         return action_sample, log_prob
 
+class Actor(nn.Module):
+    def __init__(
+        self, state_dim: int, action_dim: int, hidden_dim: int, max_action: float = 1.0
+    ):
+        super().__init__()
+        self.trunk = nn.Sequential(
+            nn.Linear(state_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+        )
+        # with separate layers works better than with Linear(hidden_dim, 2 * action_dim)
+        self.mu = nn.Linear(hidden_dim, action_dim)
+        self.log_sigma = nn.Linear(hidden_dim, action_dim)
+
+        # init as in the EDAC paper
+        for layer in self.trunk[::2]:
+            torch.nn.init.constant_(layer.bias, 0.1)
+
+        torch.nn.init.uniform_(self.mu.weight, -1e-3, 1e-3)
+        torch.nn.init.uniform_(self.mu.bias, -1e-3, 1e-3)
+        torch.nn.init.uniform_(self.log_sigma.weight, -1e-3, 1e-3)
+        torch.nn.init.uniform_(self.log_sigma.bias, -1e-3, 1e-3)
+
+        self.action_dim = action_dim
+        self.max_action = max_action
+
+    def forward(
+        self,
+        state: torch.Tensor,
+        deterministic: bool = False,
+        need_log_prob: bool = False,
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+        hidden = self.trunk(state)
+        mu, log_sigma = self.mu(hidden), self.log_sigma(hidden)
+
+        # clipping params from EDAC paper, not as in SAC paper (-20, 2)
+        log_sigma = torch.clip(log_sigma, -5, 2)
+        policy_dist = Normal(mu, torch.exp(log_sigma))
+
+        if deterministic:
+            action = mu
+        else:
+            action = policy_dist.rsample()
+
+        tanh_action, log_prob = torch.tanh(action), None
+        if need_log_prob:
+            # change of variables formula (SAC paper, appendix C, eq 21)
+            log_prob = policy_dist.log_prob(action).sum(axis=-1)
+            log_prob = log_prob - torch.log(1 - tanh_action.pow(2) + 1e-6).sum(axis=-1)
+
+        return tanh_action * self.max_action, log_prob
+
+    def log_prob(self, state, action):
+        hidden = self.trunk(state)
+        mu, log_sigma = self.mu(hidden), self.log_sigma(hidden)
+
+        # clipping params from EDAC paper, not as in SAC paper (-20, 2)
+        log_sigma = torch.clip(log_sigma, -5, 2)
+        policy_dist = Normal(mu, torch.exp(log_sigma))
+
+        log_prob = policy_dist.log_prob(action).sum(axis=-1)
+        #log_prob = log_prob - torch.log(1 - tanh_action.pow(2) + 1e-6).sum(axis=-1)
+
+        return log_prob
+
+    @torch.no_grad()
+    def act(self, state: np.ndarray, device: str) -> np.ndarray:
+        deterministic = not self.training
+        state = torch.tensor(state, device=device, dtype=torch.float32)
+        action = self(state, deterministic=deterministic)[0].cpu().numpy()
+        return action
 
 class TanhGaussianPolicy(nn.Module):
     def __init__(
@@ -422,6 +496,8 @@ class ContinuousCQL:
         critic_2_optimizer,
         actor,
         actor_optimizer,
+        execute_actor,
+        execute_actor_optimizer,
         target_entropy: float,
         discount: float = 0.99,
         alpha_multiplier: float = 1.0,
@@ -441,6 +517,7 @@ class ContinuousCQL:
         cql_max_target_backup: bool = False,
         cql_clip_diff_min: float = -np.inf,
         cql_clip_diff_max: float = np.inf,
+        mle_alpha: float = 10.0,
         device: str = "cpu",
     ):
         super().__init__()
@@ -464,6 +541,7 @@ class ContinuousCQL:
         self.cql_max_target_backup = cql_max_target_backup
         self.cql_clip_diff_min = cql_clip_diff_min
         self.cql_clip_diff_max = cql_clip_diff_max
+        self.mle_alpha = torch.FloatTensor([mle_alpha])
         self._device = device
 
         self.total_it = 0
@@ -475,8 +553,10 @@ class ContinuousCQL:
         self.target_critic_2 = deepcopy(self.critic_2).to(device)
 
         self.actor = actor
+        self.execute_actor = execute_actor
 
         self.actor_optimizer = actor_optimizer
+        self.execute_actor_optimizer = execute_actor_optimizer
         self.critic_1_optimizer = critic_1_optimizer
         self.critic_2_optimizer = critic_2_optimizer
 
@@ -529,6 +609,28 @@ class ContinuousCQL:
                 self.critic_2(observations, new_actions),
             )
             policy_loss = (alpha * log_pi - q_new_actions).mean()
+        return policy_loss
+
+    def _execute_policy_loss(
+        self,
+        observations: torch.Tensor,
+        actions: torch.Tensor,
+        new_actions: torch.Tensor,
+        alpha: torch.Tensor,
+        log_pi: torch.Tensor,
+    ) -> torch.Tensor:
+        with torch.no_grad():
+            alpha = alpha
+        if self.total_it <= self.bc_steps:
+            log_probs = self.execute_actor.log_prob(observations, actions)
+            policy_loss = (alpha * log_pi - log_probs).mean()
+        else:
+            bc_log_probs = self.execute_actor.log_prob(observations, actions)
+            q_new_actions = torch.min(
+                self.critic_1(observations, new_actions),
+                self.critic_2(observations, new_actions),
+            )
+            policy_loss = (alpha * log_pi - q_new_actions - self.mle_alpha * bc_log_probs).mean()
         return policy_loss
 
     def _q_loss(
@@ -742,11 +844,11 @@ class ContinuousCQL:
 
         if self.use_automatic_entropy_tuning:
             self.alpha_optimizer.zero_grad()
-            alpha_loss.backward()
+            alpha_loss.backward(retain_graph=True)
             self.alpha_optimizer.step()
 
         self.actor_optimizer.zero_grad()
-        policy_loss.backward()
+        policy_loss.backward(retain_graph=True)
         self.actor_optimizer.step()
 
         self.critic_1_optimizer.zero_grad()
@@ -754,6 +856,18 @@ class ContinuousCQL:
         qf_loss.backward(retain_graph=True)
         self.critic_1_optimizer.step()
         self.critic_2_optimizer.step()
+
+        execute_actions, execute_log_pi = self.execute_actor(observations, need_log_prob=True)
+        execute_policy_loss = self._execute_policy_loss(
+            observations, actions, execute_actions, alpha, execute_log_pi
+        )
+
+        log_dict["execute_policy_loss"] = execute_policy_loss.item()
+
+        self.execute_actor_optimizer.zero_grad()
+        execute_policy_loss.backward()
+        #torch.nn.utils.clip_grad_norm_(self.execute_actor.parameters(), 20.0)
+        self.execute_actor_optimizer.step()
 
         if self.total_it % self.target_update_period == 0:
             self.update_target_network(self.soft_target_update_rate)
@@ -863,6 +977,12 @@ def train(config: TrainConfig):
     ).to(config.device)
     actor_optimizer = torch.optim.Adam(actor.parameters(), config.policy_lr)
 
+    execute_actor = TanhGaussianPolicy(
+        state_dim, action_dim, max_action, orthogonal_init=config.orthogonal_init
+    ).to(config.device)
+    execute_actor = Actor(state_dim, action_dim, 256, max_action).to(config.device)
+    execute_actor_optimizer = torch.optim.Adam(execute_actor.parameters(), 3e-4)#config.policy_lr)
+
     kwargs = {
         "critic_1": critic_1,
         "critic_2": critic_2,
@@ -870,6 +990,8 @@ def train(config: TrainConfig):
         "critic_2_optimizer": critic_2_optimizer,
         "actor": actor,
         "actor_optimizer": actor_optimizer,
+        "execute_actor": execute_actor,
+        "execute_actor_optimizer": execute_actor_optimizer,
         "discount": config.discount,
         "soft_target_update_rate": config.soft_target_update_rate,
         "device": config.device,
@@ -918,7 +1040,7 @@ def train(config: TrainConfig):
             print(f"Time steps: {t + 1}")
             eval_scores = eval_actor(
                 env,
-                actor,
+                execute_actor,
                 device=config.device,
                 n_episodes=config.n_episodes,
                 seed=config.seed,
