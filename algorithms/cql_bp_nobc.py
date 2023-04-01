@@ -59,7 +59,7 @@ class TrainConfig:
     normalize_reward: bool = False  # Normalize reward
     # Wandb logging
     project: str = "my_CORL_CQL"
-    group: str = "CQLBP-" + env
+    group: str = "CQLBP-NOBC-" + env
     name: str = str(seed)
 
     def __post_init__(self):
