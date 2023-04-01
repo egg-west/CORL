@@ -857,7 +857,7 @@ class ContinuousCQL:
         self.critic_1_optimizer.step()
         self.critic_2_optimizer.step()
 
-        execute_actions, execute_log_pi = self.execute_actor(observations, need_log_prob=True)
+        execute_actions, execute_log_pi = self.execute_actor(observations)#, need_log_prob=True)
         execute_policy_loss = self._policy_loss(
             observations, actions, execute_actions, alpha, execute_log_pi
         )
