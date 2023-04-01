@@ -858,7 +858,7 @@ class ContinuousCQL:
         self.critic_2_optimizer.step()
 
         execute_actions, execute_log_pi = self.execute_actor(observations, need_log_prob=True)
-        execute_policy_loss = self._execute_policy_loss(
+        execute_policy_loss = self._policy_loss(
             observations, actions, execute_actions, alpha, execute_log_pi
         )
 
@@ -980,7 +980,7 @@ def train(config: TrainConfig):
     execute_actor = TanhGaussianPolicy(
         state_dim, action_dim, max_action, orthogonal_init=config.orthogonal_init
     ).to(config.device)
-    execute_actor = Actor(state_dim, action_dim, 256, max_action).to(config.device)
+    #execute_actor = Actor(state_dim, action_dim, 256, max_action).to(config.device)
     execute_actor_optimizer = torch.optim.Adam(execute_actor.parameters(), 3e-4)#config.policy_lr)
 
     kwargs = {
