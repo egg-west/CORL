@@ -23,7 +23,7 @@ TensorBatch = List[torch.Tensor]
 @dataclass
 class TrainConfig:
     # Experiment
-    device: str = "cuda"
+    device: str = "cpu"
     env: str = "halfcheetah-medium-expert-v2"  # OpenAI gym environment name
     seed: int = 0  # Sets Gym, PyTorch and Numpy seeds
     eval_freq: int = int(5e3)  # How often (time steps) we evaluate
