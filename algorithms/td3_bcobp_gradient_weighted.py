@@ -23,7 +23,7 @@ TensorBatch = List[torch.Tensor]
 @dataclass
 class TrainConfig:
     # Experiment
-    device: str = "cpu"
+    device: str = "cuda"
     env: str = "halfcheetah-medium-expert-v2"  # OpenAI gym environment name
     seed: int = 0  # Sets Gym, PyTorch and Numpy seeds
     eval_freq: int = int(5e3)  # How often (time steps) we evaluate
@@ -344,11 +344,11 @@ class TD3_BC:  # noqa
             pi_q_gradient = self.behavior_actor(state)
             q_gradient = self.critic_1(state, pi_q_gradient)
 
-            actor_loss = -q_gradient.mean()
+            maximize_q_loss = -q_gradient.mean()
 
             bc_loss = F.mse_loss(pi_q_gradient, action)
             self.behavior_actor_optimizer.zero_grad()
-            actor_loss.backward(retain_graph=True)
+            maximize_q_loss.backward(retain_graph=True)
 
             g_q = self.behavior_actor.net[2].weight.grad.detach().clone()
 
@@ -357,10 +357,11 @@ class TD3_BC:  # noqa
             g_bc = self.behavior_actor.net[2].weight.grad.detach().clone()
 
             cos = (g_q * g_bc).sum() / (torch.sqrt((g_q * g_q).sum()) * torch.sqrt((g_bc * g_bc).sum()))
+            cos = cos.detach()
 
             log_dict["cos"] = cos.item()
 
-            # Compute actor loss
+            # Compute behavior actor loss
             pi = self.behavior_actor(state)
             q = self.critic_1(state, pi)
             lmbda = self.alpha / q.abs().mean().detach()
@@ -376,7 +377,9 @@ class TD3_BC:  # noqa
             # Compute actor loss
             pi = self.actor(state)
             q = self.critic_1(state, pi)
-            lmbda = (self.alpha * (2.0) / (cos + 1.0)) / q.abs().mean().detach()
+            w = (2.0) / (cos + 1.0)
+            log_dict["w"] = w.item()
+            lmbda = (self.alpha * w) / q.abs().mean().detach()
 
             actor_loss = -lmbda * q.mean() + F.mse_loss(pi, action)
             log_dict["actor_loss"] = actor_loss.item()
@@ -528,12 +531,7 @@ def train(config: TrainConfig):
             eval_score = eval_scores.mean()
             normalized_eval_score = env.get_normalized_score(eval_score) * 100.0
             evaluations.append(normalized_eval_score)
-            print("---------------------------------------")
-            print(
-                f"Evaluation over {config.n_episodes} episodes: "
-                f"{eval_score:.3f} , D4RL score: {normalized_eval_score:.3f}"
-            )
-            print("---------------------------------------")
+            
             torch.save(
                 trainer.state_dict(),
                 os.path.join(config.checkpoints_path, f"checkpoint_{t}.pt"),
@@ -549,6 +547,14 @@ def train(config: TrainConfig):
             )
             eval_score = eval_scores.mean()
             behavior_normalized_eval_score = env.get_normalized_score(eval_score) * 100.0
+
+            print("---------------------------------------")
+            print(
+                f"Evaluation over {config.n_episodes} episodes: "
+                f"{eval_score:.3f} , actor D4RL score: {normalized_eval_score:.3f}, behavior actor D4RL score: {behavior_normalized_eval_score:.3f}"
+            )
+            print("---------------------------------------")
+
 
             wandb.log(
                 {"evaluate/actor_normalized_score": normalized_eval_score,
