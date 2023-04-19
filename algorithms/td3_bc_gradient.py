@@ -19,12 +19,13 @@ import wandb
 
 TensorBatch = List[torch.Tensor]
 
+ENV_NAME = "halfcheetah-medium-expert-v2"
 
 @dataclass
 class TrainConfig:
     # Experiment
-    device: str = "cpu"
-    env: str = "halfcheetah-medium-expert-v2"  # OpenAI gym environment name
+    device: str = "cuda"
+    env: str = ENV_NAME # OpenAI gym environment name
     seed: int = 0  # Sets Gym, PyTorch and Numpy seeds
     eval_freq: int = int(5e3)  # How often (time steps) we evaluate
     n_episodes: int = 10  # How many episodes run during evaluation
@@ -46,7 +47,7 @@ class TrainConfig:
     normalize_reward: bool = False  # Normalize reward
     # Wandb logging
     project: str = "CORL_gradient"
-    group: str = "TD3_BC-D4RL"
+    group: str = ENV_NAME
     name: str = "TD3_BC"
 
 
