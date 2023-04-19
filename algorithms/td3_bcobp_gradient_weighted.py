@@ -367,7 +367,7 @@ class TD3_BC:  # noqa
             lmbda = self.alpha / q.abs().mean().detach()
 
             behavior_actor_loss = -lmbda * q.mean() + F.mse_loss(pi, action)
-            log_dict["behavior_actor_loss"] = actor_loss.item()
+            log_dict["behavior_actor_loss"] = behavior_actor_loss.item()
             # Optimize the actor
             self.behavior_actor_optimizer.zero_grad()
             behavior_actor_loss.backward()
