@@ -19,12 +19,13 @@ import wandb
 
 TensorBatch = List[torch.Tensor]
 
+ENV_NAME = "halfcheetah-medium-expert-v2"
 
 @dataclass
 class TrainConfig:
     # Experiment
     device: str = "cuda"
-    env: str = "halfcheetah-medium-expert-v2"  # OpenAI gym environment name
+    env: str = ENV_NAME # OpenAI gym environment name
     seed: int = 0  # Sets Gym, PyTorch and Numpy seeds
     eval_freq: int = int(5e3)  # How often (time steps) we evaluate
     n_episodes: int = 10  # How many episodes run during evaluation
@@ -46,7 +47,7 @@ class TrainConfig:
     normalize_reward: bool = False  # Normalize reward
     # Wandb logging
     project: str = "CORL_td3bcobp_gradient"
-    group: str = "TD3_BC-D4RL"
+    group: str = f"{ENV_NAME}"
     name: str = "TD3_BC"
 
 
@@ -347,9 +348,9 @@ class TD3_BC:  # noqa
             maximize_q_loss = -q_gradient.mean()
 
             bc_loss = F.mse_loss(pi_q_gradient, action)
+
             self.behavior_actor_optimizer.zero_grad()
             maximize_q_loss.backward(retain_graph=True)
-
             g_q = self.behavior_actor.net[2].weight.grad.detach().clone()
 
             self.behavior_actor_optimizer.zero_grad()
@@ -357,7 +358,7 @@ class TD3_BC:  # noqa
             g_bc = self.behavior_actor.net[2].weight.grad.detach().clone()
 
             cos = (g_q * g_bc).sum() / (torch.sqrt((g_q * g_q).sum()) * torch.sqrt((g_bc * g_bc).sum()))
-            cos = cos.detach()
+            #cos = cos.detach()
 
             log_dict["cos"] = cos.item()
 
@@ -372,7 +373,6 @@ class TD3_BC:  # noqa
             self.behavior_actor_optimizer.zero_grad()
             behavior_actor_loss.backward()
             self.behavior_actor_optimizer.step()
-
 
             # Compute actor loss
             pi = self.actor(state)
@@ -481,8 +481,8 @@ def train(config: TrainConfig):
         "max_action": max_action,
         "actor": actor,
         "actor_optimizer": actor_optimizer,
-        "behavior_actor": actor,
-        "behavior_actor_optimizer": actor_optimizer,
+        "behavior_actor": behavior_actor,
+        "behavior_actor_optimizer": behavior_actor_optimizer,
         "critic_1": critic_1,
         "critic_1_optimizer": critic_1_optimizer,
         "critic_2": critic_2,
