@@ -353,10 +353,15 @@ class TD3_BC:  # noqa
             bc_loss.backward(retain_graph=True)
             g_bc = self.actor.net[2].weight.grad.detach().clone()
 
-            cos = (g_q * g_bc).sum() / (torch.sqrt((g_q * g_q).sum()) * torch.sqrt((g_bc * g_bc).sum()))
+            g_q_norm = torch.sqrt((g_q * g_q).sum())
+            g_bc_norm = torch.sqrt((g_bc * g_bc).sum())
+            cos = (g_q * g_bc).sum() / (g_q_norm * g_bc_norm)
             #print(cos)
             #exit()
             log_dict["cos"] = cos.item()
+            log_dict["g_q_norm"] = g_q_norm.item()
+            log_dict["g_bc_norm"] = g_bc_norm.item()
+
 
             # Compute actor loss
             pi = self.actor(state)
