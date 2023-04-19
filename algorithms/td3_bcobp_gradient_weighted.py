@@ -264,6 +264,8 @@ class TD3_BC:  # noqa
         max_action: float,
         actor: nn.Module,
         actor_optimizer: torch.optim.Optimizer,
+        behavior_actor: nn.Module,
+        behavior_actor_optimizer: torch.optim.Optimizer,
         critic_1: nn.Module,
         critic_1_optimizer: torch.optim.Optimizer,
         critic_2: nn.Module,
@@ -277,8 +279,10 @@ class TD3_BC:  # noqa
         device: str = "cpu",
     ):
         self.actor = actor
-        self.actor_target = copy.deepcopy(actor)
+        self.behavior_actor = behavior_actor
+        self.behavior_actor_target = copy.deepcopy(behavior_actor)
         self.actor_optimizer = actor_optimizer
+        self.behavior_actor_optimizer = behavior_actor_optimizer
         self.critic_1 = critic_1
         self.critic_1_target = copy.deepcopy(critic_1)
         self.critic_1_optimizer = critic_1_optimizer
@@ -310,7 +314,7 @@ class TD3_BC:  # noqa
                 -self.noise_clip, self.noise_clip
             )
 
-            next_action = (self.actor_target(next_state) + noise).clamp(
+            next_action = (self.behavior_actor_target(next_state) + noise).clamp(
                 -self.max_action, self.max_action
             )
 
@@ -337,43 +341,54 @@ class TD3_BC:  # noqa
         # Delayed actor updates
         if self.total_it % self.policy_freq == 0:
             # get q graidnet
-            pi_q_gradient = self.actor(state)
+            pi_q_gradient = self.behavior_actor(state)
             q_gradient = self.critic_1(state, pi_q_gradient)
-            #lmbda = self.alpha / q.abs().mean().detach()
 
             actor_loss = -q_gradient.mean()
 
             bc_loss = F.mse_loss(pi_q_gradient, action)
-            self.actor_optimizer.zero_grad()
+            self.behavior_actor_optimizer.zero_grad()
             actor_loss.backward(retain_graph=True)
 
-            g_q = self.actor.net[2].weight.grad.detach().clone()
+            g_q = self.behavior_actor.net[2].weight.grad.detach().clone()
 
-            self.actor_optimizer.zero_grad()
+            self.behavior_actor_optimizer.zero_grad()
             bc_loss.backward(retain_graph=True)
-            g_bc = self.actor.net[2].weight.grad.detach().clone()
+            g_bc = self.behavior_actor.net[2].weight.grad.detach().clone()
 
             cos = (g_q * g_bc).sum() / (torch.sqrt((g_q * g_q).sum()) * torch.sqrt((g_bc * g_bc).sum()))
-            #print(cos)
-            #exit()
+
             log_dict["cos"] = cos.item()
+
+            # Compute actor loss
+            pi = self.behavior_actor(state)
+            q = self.critic_1(state, pi)
+            lmbda = self.alpha / q.abs().mean().detach()
+
+            actor_loss = -lmbda * q.mean() + F.mse_loss(pi, action)
+            log_dict["behavior_actor_loss"] = actor_loss.item()
+            # Optimize the actor
+            self.behavior_actor_optimizer.zero_grad()
+            behavior_actor_loss.backward()
+            self.behavior_actor_optimizer.step()
+
 
             # Compute actor loss
             pi = self.actor(state)
             q = self.critic_1(state, pi)
-            lmbda = self.alpha / q.abs().mean().detach()
+            lmbda = (self.alpha * (2.0) / (cos + 1.0)) / q.abs().mean().detach()
 
             actor_loss = -lmbda * q.mean() + F.mse_loss(pi, action)
             log_dict["actor_loss"] = actor_loss.item()
             # Optimize the actor
             self.actor_optimizer.zero_grad()
             actor_loss.backward()
-            self.actor_optimizer.step()
+            self.behavior_actor_optimizer.step()
 
             # Update the frozen target models
             soft_update(self.critic_1_target, self.critic_1, self.tau)
             soft_update(self.critic_2_target, self.critic_2, self.tau)
-            soft_update(self.actor_target, self.actor, self.tau)
+            soft_update(self.behavior_actor_target, self.behavior_actor, self.tau)
 
         return log_dict
 
@@ -451,6 +466,9 @@ def train(config: TrainConfig):
     actor = Actor(state_dim, action_dim, max_action).to(config.device)
     actor_optimizer = torch.optim.Adam(actor.parameters(), lr=3e-4)
 
+    behavior_actor = Actor(state_dim, action_dim, max_action).to(config.device)
+    behavior_actor_optimizer = torch.optim.Adam(behavior_actor.parameters(), lr=3e-4)
+
     critic_1 = Critic(state_dim, action_dim).to(config.device)
     critic_1_optimizer = torch.optim.Adam(critic_1.parameters(), lr=3e-4)
     critic_2 = Critic(state_dim, action_dim).to(config.device)
@@ -460,6 +478,8 @@ def train(config: TrainConfig):
         "max_action": max_action,
         "actor": actor,
         "actor_optimizer": actor_optimizer,
+        "behavior_actor": actor,
+        "behavior_actor_optimizer": actor_optimizer,
         "critic_1": critic_1,
         "critic_1_optimizer": critic_1_optimizer,
         "critic_2": critic_2,
@@ -518,8 +538,21 @@ def train(config: TrainConfig):
                 trainer.state_dict(),
                 os.path.join(config.checkpoints_path, f"checkpoint_{t}.pt"),
             )
+
+            # evaluate 
+            eval_scores = eval_actor(
+                env,
+                behavior_actor,
+                device=config.device,
+                n_episodes=config.n_episodes,
+                seed=config.seed,
+            )
+            eval_score = eval_scores.mean()
+            behavior_normalized_eval_score = env.get_normalized_score(eval_score) * 100.0
+
             wandb.log(
-                {"d4rl_normalized_score": normalized_eval_score},
+                {"evaluate/actor_normalized_score": normalized_eval_score,
+                "evaluate/behavior_actor_normalized_score": behavior_normalized_eval_score},
                 step=trainer.total_it,
             )
 
