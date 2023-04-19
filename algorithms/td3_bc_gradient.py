@@ -347,14 +347,15 @@ class TD3_BC:  # noqa
             self.actor_optimizer.zero_grad()
             actor_loss.backward()
 
-            g_q = self.actor.net[2].grad
-            print(g_q)
-            exit()
+            g_q = self.actor.net[2].weight.grad
 
             self.actor_optimizer.zero_grad()
             bc_loss.backward()
+            g_bc = self.actor.net[2].weight.grad
 
-
+            cos = (g_q * g_bc) / (torch.sqrt((g_q * g_q).sum()) * torch.sqrt((g_bc * g_bc).sum()))
+            print(cos)
+            exit()
 
             # Compute actor loss
             pi = self.actor(state)
