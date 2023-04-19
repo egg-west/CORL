@@ -45,7 +45,7 @@ class TrainConfig:
     normalize: bool = True  # Normalize states
     normalize_reward: bool = False  # Normalize reward
     # Wandb logging
-    project: str = "CORL_gradient"
+    project: str = "CORL_td3bcobp_gradient"
     group: str = "TD3_BC-D4RL"
     name: str = "TD3_BC"
 
