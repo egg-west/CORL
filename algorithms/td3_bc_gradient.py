@@ -359,9 +359,14 @@ class TD3_BC:  # noqa
             cos = (g_q * g_bc).sum() / (g_q_norm * g_bc_norm)
             #print(cos)
             #exit()
+
+            q_gradient_2 = self.critic_2(state, pi_q_gradient)
+            q_gradient_mean = (q_gradient + q_gradient_2) / 2.0
+            variance = ((q_gradient_2 - q_gradient_mean)**2).sum() + ((q_gradient - q_gradient_mean)**2).sum()
             log_dict["cos"] = cos.item()
             log_dict["g_q_norm"] = g_q_norm.item()
             log_dict["g_bc_norm"] = g_bc_norm.item()
+            log_dict["q_variance"] = variance.detach().item()
 
 
             # Compute actor loss
